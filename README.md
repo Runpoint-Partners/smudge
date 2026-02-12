@@ -1,5 +1,9 @@
 # Smudge
 
+<p align="center">
+  <img src="src-tauri/icons/icon.png" alt="Smudge" width="200" height="200" style="border-radius: 22px;">
+</p>
+
 A fork of [Scratch](https://github.com/erictli/scratch) — a minimalist, offline-first markdown note-taking app — with macOS file association support so it works as a default `.md` editor.
 
 ## What's different from Scratch
