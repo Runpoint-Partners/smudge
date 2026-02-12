@@ -1,84 +1,40 @@
-# Scratch
+# Smudge
 
-<img src="docs/app-icon.png" alt="Scratch" width="128" height="128" style="border-radius: 22px; margin-bottom: 8px;">
+A fork of [Scratch](https://github.com/erictli/scratch) — a minimalist, offline-first markdown note-taking app — with macOS file association support so it works as a default `.md` editor.
 
-A minimalist, offline-first markdown note-taking app for macOS and Windows.
+## What's different from Scratch
 
-![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
-![Windows](https://img.shields.io/badge/platform-Windows-blue)
+- **macOS file association** — Register as an editor for `.md` files. Double-click any markdown file in Finder to open it in Smudge.
+- **Drag-and-drop** — Drag `.md` files onto the app window or the dock icon to open them.
+- **Open without a notes folder** — Smudge can open individual `.md` files even if you haven't configured a notes folder yet.
+- **Full edit and save** — External files get the same WYSIWYG editor and auto-save as notes in your folder.
+- **Quarantine handling** — Automatically strips macOS Gatekeeper quarantine attributes so downloaded `.md` files open without issues.
+- **Renamed** — All branding, identifiers, and config paths updated from Scratch to Smudge.
 
-## Features
-
-- **Offline-first** - No cloud, no account, no internet required
-- **Markdown-based** - Notes stored as plain `.md` files you own
-- **WYSIWYG editing** - Rich text editing with tables that saves as markdown
-- **Works with AI agents** - Detects external file changes and refreshes on demand
-- **AI editing** - Invoke Claude Code CLI to edit notes with natural language prompts
-- **Full-text search** - Fast search with command palette
-- **Git integration** - Optional version control for your notes
-- **Customizable** - Theme (light/dark/system) and editor typography settings
-
-## Screenshot
-
-![Screenshot](docs/screenshot.png)
+Everything else from Scratch is preserved: offline-first storage, markdown-based notes, WYSIWYG editing, full-text search, git integration, AI editing via Claude Code CLI, and theme customization.
 
 ## Installation
 
-### macOS
-
-**Homebrew (Recommended)**
-
-```bash
-brew tap erictli/tap
-brew install --cask erictli/tap/scratch
-```
-
-**Manual Download**
-
-1. Download the latest `.dmg` from [Releases](https://github.com/erictli/scratch/releases)
-2. Open the DMG and drag Scratch to Applications
-3. Open Scratch from Applications
-
-### Windows
-
-1. Download `Scratch_x64-setup.exe` from [Releases](https://github.com/erictli/scratch/releases)
-2. Run the installer
-3. The installer will automatically download WebView2 if needed
-
 ### From Source
 
-**Prerequisites:** Node.js 18+, Rust 1.70+
-
-**macOS only:** Xcode Command Line Tools
+**Prerequisites:** Node.js 18+, Rust 1.70+, Xcode Command Line Tools (macOS)
 
 ```bash
-git clone https://github.com/erictli/scratch.git
-cd scratch
+git clone https://github.com/Runpoint-Partners/smudge.git
+cd smudge
 npm install
 npm run tauri dev      # Development
 npm run tauri build    # Production build
 ```
 
-## Keyboard Shortcuts
+After building, copy `src-tauri/target/release/bundle/macos/Smudge.app` to `/Applications/`.
 
-Scratch is designed to be usable without a mouse. Here are the essentials to get started:
+To avoid Gatekeeper warnings on the app itself:
 
-| Shortcut       | Action              |
-| -------------- | ------------------- |
-| `Cmd+N`        | New note            |
-| `Cmd+P`        | Command palette     |
-| `Cmd+K`        | Add/edit link       |
-| `Cmd+F`        | Find in note        |
-| `Cmd+Shift+C`  | Copy as...          |
-| `Cmd+R`        | Reload current note |
-| `Cmd+,`        | Open settings       |
-| `Cmd+\`        | Toggle sidebar      |
-| `Cmd+B/I`      | Bold/Italic         |
-| `↑/↓`          | Navigate notes      |
-
-**Note:** On Windows, use `Ctrl` instead of `Cmd` for all shortcuts.
-
-Many more shortcuts and features are available in the app—explore via the command palette (`Cmd+P` / `Ctrl+P`) or view the full reference in Settings → Shortcuts.
+```bash
+xattr -cr /Applications/Smudge.app
+codesign --force --deep --sign - /Applications/Smudge.app
+```
 
 ## Built With
 
