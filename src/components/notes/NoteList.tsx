@@ -68,7 +68,7 @@ interface NoteItemProps {
   modified: number;
   isSelected: boolean;
   isPinned: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
 }
 
@@ -82,7 +82,10 @@ const NoteItem = memo(function NoteItem({
   onSelect,
   onContextMenu,
 }: NoteItemProps) {
-  const handleClick = useCallback(() => onSelect(id), [onSelect, id]);
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => onSelect(id, e),
+    [onSelect, id]
+  );
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => onContextMenu(e, id),
     [onContextMenu, id]
@@ -116,9 +119,11 @@ export function NoteList() {
   } = useNotes();
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [noteToDelete, setNoteToDelete] = useState<string | null>(null);
+  const [notesToDelete, setNotesToDelete] = useState<string[]>([]);
+  const [multiSelectedIds, setMultiSelectedIds] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState<Settings | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const lastSelectedIdRef = useRef<string | null>(null);
 
   // Load settings when notes change
   useEffect(() => {
@@ -137,21 +142,28 @@ export function NoteList() {
   );
 
   const handleDeleteConfirm = useCallback(async () => {
-    if (noteToDelete) {
+    if (notesToDelete.length > 0) {
       try {
-        await deleteNote(noteToDelete);
-        setNoteToDelete(null);
+        for (const noteId of notesToDelete) {
+          await deleteNote(noteId);
+        }
+        setNotesToDelete([]);
+        setMultiSelectedIds(new Set());
         setDeleteDialogOpen(false);
       } catch (error) {
         console.error("Failed to delete note:", error);
       }
     }
-  }, [noteToDelete, deleteNote]);
+  }, [notesToDelete, deleteNote]);
 
   const handleContextMenu = useCallback(
     async (e: React.MouseEvent, noteId: string) => {
       e.preventDefault();
       const isPinned = pinnedIds.has(noteId);
+      const noteIdsForDelete =
+        multiSelectedIds.size > 1 && multiSelectedIds.has(noteId)
+          ? Array.from(multiSelectedIds)
+          : [noteId];
 
       const menu = await Menu.new({
         items: [
@@ -175,7 +187,7 @@ export function NoteList() {
           await MenuItem.new({
             text: "Delete",
             action: () => {
-              setNoteToDelete(noteId);
+              setNotesToDelete(noteIdsForDelete);
               setDeleteDialogOpen(true);
             },
           }),
@@ -184,7 +196,7 @@ export function NoteList() {
 
       await menu.popup();
     },
-    [pinnedIds, pinNote, unpinNote, duplicateNote]
+    [pinnedIds, pinNote, unpinNote, duplicateNote, multiSelectedIds]
   );
 
   // Memoize display items to prevent recalculation on every render
@@ -199,6 +211,87 @@ export function NoteList() {
     }
     return notes;
   }, [searchQuery, searchResults, notes]);
+
+  const noteIdsInView = useMemo(
+    () => new Set(displayItems.map((item) => item.id)),
+    [displayItems]
+  );
+
+  // Keep multi-select set in sync when list/search results change.
+  useEffect(() => {
+    setMultiSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(Array.from(prev).filter((id) => noteIdsInView.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [noteIdsInView]);
+
+  const queueDeleteSelection = useCallback(() => {
+    const ids =
+      multiSelectedIds.size > 0
+        ? Array.from(multiSelectedIds)
+        : selectedNoteId
+          ? [selectedNoteId]
+          : [];
+    if (ids.length === 0) return;
+    setNotesToDelete(ids);
+    setDeleteDialogOpen(true);
+  }, [multiSelectedIds, selectedNoteId]);
+
+  const handleSelect = useCallback(
+    (id: string, e: React.MouseEvent) => {
+      containerRef.current?.focus();
+
+      if (e.shiftKey) {
+        const anchorId = lastSelectedIdRef.current ?? selectedNoteId ?? id;
+        const anchorIndex = displayItems.findIndex((item) => item.id === anchorId);
+        const targetIndex = displayItems.findIndex((item) => item.id === id);
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const [start, end] =
+            anchorIndex < targetIndex
+              ? [anchorIndex, targetIndex]
+              : [targetIndex, anchorIndex];
+          const rangeIds = displayItems.slice(start, end + 1).map((item) => item.id);
+          setMultiSelectedIds(new Set(rangeIds));
+          lastSelectedIdRef.current = id;
+          void selectNote(id);
+          return;
+        }
+      }
+
+      if (e.metaKey || e.ctrlKey) {
+        setMultiSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.size === 0 && selectedNoteId) {
+            next.add(selectedNoteId);
+          }
+          if (next.has(id)) {
+            next.delete(id);
+          } else {
+            next.add(id);
+          }
+          return next;
+        });
+        lastSelectedIdRef.current = id;
+        void selectNote(id);
+        return;
+      }
+
+      setMultiSelectedIds(new Set());
+      lastSelectedIdRef.current = id;
+      void selectNote(id);
+    },
+    [displayItems, selectNote, selectedNoteId]
+  );
+
+  const handleListKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      e.preventDefault();
+      queueDeleteSelection();
+    },
+    [queueDeleteSelection]
+  );
 
   // Listen for focus request from editor (when Escape is pressed)
   useEffect(() => {
@@ -240,6 +333,7 @@ export function NoteList() {
       <div
         ref={containerRef}
         tabIndex={0}
+        onKeyDown={handleListKeyDown}
         className="flex flex-col gap-1 p-1.5 outline-none"
       >
         {displayItems.map((item) => (
@@ -249,9 +343,9 @@ export function NoteList() {
             title={item.title}
             preview={item.preview}
             modified={item.modified}
-            isSelected={selectedNoteId === item.id}
+            isSelected={selectedNoteId === item.id || multiSelectedIds.has(item.id)}
             isPinned={pinnedIds.has(item.id)}
-            onSelect={selectNote}
+            onSelect={handleSelect}
             onContextMenu={handleContextMenu}
           />
         ))}
@@ -261,10 +355,13 @@ export function NoteList() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete note?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {notesToDelete.length > 1 ? "Delete notes?" : "Delete note?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete the note and all its content. This
-              action cannot be undone.
+              {notesToDelete.length > 1
+                ? `This will permanently delete ${notesToDelete.length} notes and all their content. This action cannot be undone.`
+                : "This will permanently delete the note and all its content. This action cannot be undone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

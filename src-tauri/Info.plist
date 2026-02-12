@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Markdown Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>net.daringfireball.markdown</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>md</string>
+        <string>markdown</string>
+        <string>mdown</string>
+        <string>mkd</string>
+      </array>
+    </dict>
+  </array>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Smudge needs access to files in your Desktop folder so you can open markdown files directly.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Smudge needs access to files in your Documents folder so you can open and save markdown notes.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Smudge needs access to files in your Downloads folder so you can open downloaded markdown files.</string>
+</dict>
+</plist>

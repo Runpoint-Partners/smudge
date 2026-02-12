@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Scratch",
+  "productName": "Smudge",
   "version": "0.4.0",
-  "identifier": "com.scratch.app",
+  "identifier": "com.smudge",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Scratch",
+        "title": "Smudge",
         "width": 1080,
         "height": 720,
         "minWidth": 600,
@@ -44,6 +44,14 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown", "mdown", "mkd"],
+        "mimeType": "text/markdown",
+        "name": "Markdown Document",
+        "role": "Editor"
+      }
     ],
     "macOS": {
       "minimumSystemVersion": "10.15"

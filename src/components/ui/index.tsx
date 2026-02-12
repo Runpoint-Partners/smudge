@@ -134,7 +134,7 @@ interface ListItemProps {
   meta?: string;
   isSelected?: boolean;
   isPinned?: boolean;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
   /** Optional status icon to display next to meta */
 }
 

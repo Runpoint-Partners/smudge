@@ -90,7 +90,7 @@ export function GeneralSettingsSection() {
 
       if (selected) {
         await setNotesFolder(selected);
-        // Reload theme/font settings from the new folder's .scratch/settings.json
+        // Reload theme/font settings from the new folder's .smudge/settings.json
         await reloadSettings();
       }
     } catch (err) {
@@ -451,9 +451,9 @@ export function GeneralSettingsSection() {
 
       {/* About */}
       <section>
-        <h2 className="text-xl font-medium mb-0.5">About Scratch</h2>
+        <h2 className="text-xl font-medium mb-0.5">About Smudge</h2>
         <p className="text-sm text-text-muted mb-3">
-          You are currently using Scratch v{appVersion || "..."}. Learn more on{" "}
+          You are currently using Smudge v{appVersion || "..."}. Learn more on{" "}
           <a
             href="https://github.com/erictli/scratch"
             target="_blank"

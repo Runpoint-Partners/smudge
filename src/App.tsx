@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -22,6 +22,7 @@ import {
 import * as aiService from "./services/ai";
 
 type ViewState = "notes" | "settings";
+const LAST_EXTERNAL_FILE_SESSION_KEY = "smudge:last-external-file-path";
 
 function AppContent() {
   const {
@@ -43,30 +44,65 @@ function AppContent() {
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiEditing, setAiEditing] = useState(false);
+  const openedFileProbeTimersRef = useRef<number[]>([]);
 
-  // Cold start: check for files opened via OS file association
-  useEffect(() => {
-    async function checkOpenedFiles() {
-      try {
-        const files = await invoke<string[]>("get_opened_files");
-        if (files.length > 0) {
-          await openExternalFile(files[0]);
-        }
-        // Mark frontend as ready for warm-start events
-        await invoke("mark_frontend_ready");
-      } catch (err) {
-        console.error("Failed to check opened files:", err);
+  const persistExternalFilePath = useCallback((path: string | null) => {
+    try {
+      if (path) {
+        window.sessionStorage.setItem(LAST_EXTERNAL_FILE_SESSION_KEY, path);
+      } else {
+        window.sessionStorage.removeItem(LAST_EXTERNAL_FILE_SESSION_KEY);
       }
+    } catch {
+      // Ignore storage errors (e.g. disabled storage in unusual environments)
     }
-    checkOpenedFiles();
-  }, [openExternalFile]);
+  }, []);
 
-  // Warm start: listen for file-opened events from the Rust backend
+  const readPersistedExternalFilePath = useCallback(() => {
+    try {
+      return window.sessionStorage.getItem(LAST_EXTERNAL_FILE_SESSION_KEY);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Check for files opened via OS file association (cold start + warm start signal)
+  const checkOpenedFiles = useCallback(async () => {
+    try {
+      const files = await invoke<string[]>("get_opened_files");
+      const markdownFiles = files.filter((path) =>
+        /\.(md|markdown|mdown|mkd)$/i.test(path),
+      );
+      if (markdownFiles.length > 0) {
+        // Prefer the latest opened file if multiple were queued.
+        const filePath = markdownFiles[markdownFiles.length - 1];
+        persistExternalFilePath(filePath);
+        await openExternalFile(filePath);
+      }
+    } catch (err) {
+      console.error("Failed to check opened files:", err);
+    }
+  }, [openExternalFile, persistExternalFilePath]);
+
+  // Cold start: check for buffered files and mark frontend ready
+  useEffect(() => {
+    async function init() {
+      const persistedFilePath = readPersistedExternalFilePath();
+      if (persistedFilePath) {
+        await openExternalFile(persistedFilePath);
+      }
+      await checkOpenedFiles();
+      await invoke("mark_frontend_ready");
+    }
+    init();
+  }, [checkOpenedFiles, openExternalFile, readPersistedExternalFilePath]);
+
+  // Warm start: listen for file-opened signal from backend, then poll for files
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
-    listen<string>("file-opened", (event) => {
-      openExternalFile(event.payload);
+    listen<string>("file-opened", () => {
+      checkOpenedFiles();
     }).then((fn) => {
       unlisten = fn;
     });
@@ -74,7 +110,61 @@ function AppContent() {
     return () => {
       if (unlisten) unlisten();
     };
-  }, [openExternalFile]);
+  }, [checkOpenedFiles]);
+
+  // Fallback for missed warm-start signals:
+  // when the app becomes focused/visible, poll backend's buffered opened files.
+  useEffect(() => {
+    const clearProbeTimers = () => {
+      for (const timer of openedFileProbeTimersRef.current) {
+        clearTimeout(timer);
+      }
+      openedFileProbeTimersRef.current = [];
+    };
+
+    const probeOpenedFiles = () => {
+      clearProbeTimers();
+      // Probe several times because macOS focus and Opened events can arrive
+      // in either order when opening files into an already-running app.
+      const delays = [0, 150, 400, 900, 1500];
+      for (const delay of delays) {
+        const timer = window.setTimeout(() => {
+          checkOpenedFiles();
+        }, delay);
+        openedFileProbeTimersRef.current.push(timer);
+      }
+    };
+
+    const handleFocus = () => {
+      probeOpenedFiles();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        probeOpenedFiles();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      clearProbeTimers();
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [checkOpenedFiles]);
+
+  // Last-resort fallback: periodically poll backend's opened-file buffer.
+  // This guarantees OS-opened files are eventually picked up even if signals
+  // or focus ordering fail on some macOS flows.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      checkOpenedFiles();
+    }, 1500);
+    return () => {
+      clearInterval(interval);
+    };
+  }, [checkOpenedFiles]);
 
   // Drag-and-drop: open .md files dropped onto the app window
   useEffect(() => {
@@ -99,6 +189,11 @@ function AppContent() {
       if (unlisten) unlisten();
     };
   }, [openExternalFile]);
+
+  // Keep the session cache in sync so external files survive remounts in dev.
+  useEffect(() => {
+    persistExternalFilePath(externalFile?.path ?? null);
+  }, [externalFile?.path, persistExternalFilePath]);
 
   const toggleSidebar = useCallback(() => {
     setSidebarVisible((prev) => !prev);

@@ -26,7 +26,7 @@ export interface EditorFontSettings {
   lineHeight?: number; // default 1.6
 }
 
-// Per-folder settings (stored in .scratch/settings.json)
+// Per-folder settings (stored in .smudge/settings.json)
 export interface Settings {
   theme: ThemeSettings;
   editorFont?: EditorFontSettings;

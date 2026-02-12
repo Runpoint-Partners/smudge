@@ -218,7 +218,7 @@ export function CommandPalette({
           icon: <GitCommitIcon className="w-4.5 h-4.5 stroke-[1.5]" />,
           action: async () => {
             try {
-              await commit("Quick commit from Scratch");
+              await commit("Quick commit from Smudge");
               toast.success("Changes committed");
               onClose();
             } catch (error) {

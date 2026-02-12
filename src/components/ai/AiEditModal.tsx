@@ -138,7 +138,7 @@ export function AiEditModal({
                   >
                     Claude Code
                   </a>{" "}
-                  to install it, then restart Scratch.
+                  to install it, then restart Smudge.
                 </div>
               </div>
               <div className="w-full flex justify-between">

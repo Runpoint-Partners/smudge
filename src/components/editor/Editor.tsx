@@ -67,6 +67,7 @@ import {
   RefreshCwIcon,
   PinIcon,
   SearchIcon,
+  XIcon,
 } from "../icons";
 
 function formatDateTime(timestamp: number): string {
@@ -348,6 +349,9 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
     reloadVersion,
     pinNote,
     unpinNote,
+    externalFile,
+    saveExternalFile,
+    closeExternalFile,
   } = useNotes();
   const [isSaving, setIsSaving] = useState(false);
   // Force re-render when selection changes to update toolbar active states
@@ -507,18 +511,26 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
     [],
   );
 
+  // Track external file path for save routing
+  const externalFileRef = useRef<string | null>(null);
+  externalFileRef.current = externalFile?.path ?? null;
+
   // Immediate save function (used for flushing)
   const saveImmediately = useCallback(
     async (noteId: string, content: string) => {
       setIsSaving(true);
       try {
-        lastSaveRef.current = { noteId, content };
-        await saveNote(content, noteId);
+        if (externalFileRef.current) {
+          await saveExternalFile(content);
+        } else {
+          lastSaveRef.current = { noteId, content };
+          await saveNote(content, noteId);
+        }
       } finally {
         setIsSaving(false);
       }
     },
-    [saveNote],
+    [saveNote, saveExternalFile],
   );
 
   // Flush any pending save immediately (saves to the note currently loaded in editor)
@@ -528,18 +540,38 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
       saveTimeoutRef.current = null;
     }
 
-    // Use loadedNoteIdRef (the note in the editor) not currentNoteIdRef (which may have changed)
-    if (needsSaveRef.current && editorRef.current && loadedNoteIdRef.current) {
+    if (needsSaveRef.current && editorRef.current) {
       needsSaveRef.current = false;
       const markdown = getMarkdown(editorRef.current);
-      await saveImmediately(loadedNoteIdRef.current, markdown);
+      if (externalFileRef.current) {
+        await saveExternalFile(markdown);
+      } else if (loadedNoteIdRef.current) {
+        await saveImmediately(loadedNoteIdRef.current, markdown);
+      }
     }
-  }, [saveImmediately, getMarkdown]);
+  }, [saveImmediately, getMarkdown, saveExternalFile]);
 
   // Schedule a debounced save (markdown computed only when timer fires)
   const scheduleSave = useCallback(() => {
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
+    }
+
+    // For external files, save directly
+    if (externalFile) {
+      needsSaveRef.current = true;
+      saveTimeoutRef.current = window.setTimeout(async () => {
+        if (!needsSaveRef.current || !editorRef.current) return;
+        needsSaveRef.current = false;
+        const markdown = getMarkdown(editorRef.current);
+        setIsSaving(true);
+        try {
+          await saveExternalFile(markdown);
+        } finally {
+          setIsSaving(false);
+        }
+      }, 500);
+      return;
     }
 
     const savingNoteId = currentNote?.id;
@@ -559,7 +591,7 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
         await saveImmediately(savingNoteId, markdown);
       }
     }, 500);
-  }, [saveImmediately, getMarkdown, currentNote?.id]);
+  }, [saveImmediately, getMarkdown, currentNote?.id, externalFile, saveExternalFile]);
 
   const editor = useEditor({
     extensions: [
@@ -901,6 +933,42 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
     });
   }, [currentNote, editor, flushPendingSave, reloadVersion]);
 
+  // Load external file content when externalFile changes
+  useEffect(() => {
+    if (!externalFile || !editor) return;
+
+    // Flush any pending note save before loading external file
+    if (needsSaveRef.current) {
+      flushPendingSave();
+    }
+
+    // Use a special marker in loadedNoteIdRef
+    loadedNoteIdRef.current = `__external__${externalFile.path}`;
+    isLoadingRef.current = true;
+
+    editor.commands.blur();
+
+    const manager = editor.storage.markdown?.manager;
+    if (manager) {
+      try {
+        const parsed = manager.parse(externalFile.content);
+        editor.commands.setContent(parsed);
+      } catch {
+        editor.commands.setContent(externalFile.content);
+      }
+    } else {
+      editor.commands.setContent(externalFile.content);
+    }
+
+    scrollContainerRef.current?.scrollTo(0, 0);
+
+    requestAnimationFrame(() => {
+      scrollContainerRef.current?.scrollTo(0, 0);
+      isLoadingRef.current = false;
+      editor.commands.focus("start");
+    });
+  }, [externalFile?.path, externalFile?.content, editor, flushPendingSave]);
+
   // Scroll to top on mount (e.g., when returning from settings)
   useEffect(() => {
     scrollContainerRef.current?.scrollTo(0, 0);
@@ -1197,7 +1265,7 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
     }
   }, [editor]);
 
-  if (!currentNote) {
+  if (!currentNote && !externalFile) {
     return (
       <div className="flex-1 flex flex-col bg-bg">
         {/* Drag region */}
@@ -1242,7 +1310,8 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
       <div
         className={cn(
           "h-11 shrink-0 flex items-center justify-between px-3",
-          !sidebarVisible && "pl-22",
+          !sidebarVisible && !externalFile && "pl-22",
+          externalFile && !sidebarVisible && "pl-22",
         )}
         data-tauri-drag-region
       >
@@ -1260,9 +1329,15 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
               <PanelLeftIcon className="w-4.5 h-4.5 stroke-[1.5]" />
             </IconButton>
           )}
-          <span className="text-xs text-text-muted mb-px truncate">
-            {formatDateTime(currentNote.modified)}
-          </span>
+          {externalFile ? (
+            <span className="text-xs text-text-muted mb-px truncate" title={externalFile.path}>
+              {externalFile.name}
+            </span>
+          ) : currentNote ? (
+            <span className="text-xs text-text-muted mb-px truncate">
+              {formatDateTime(currentNote.modified)}
+            </span>
+          ) : null}
         </div>
         <div className="titlebar-no-drag flex items-center gap-px shrink-0">
           {hasExternalChanges ? (
@@ -1290,7 +1365,7 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
               </div>
             </Tooltip>
           )}
-          {currentNote && (
+          {currentNote && !externalFile && (
             <Tooltip content={isPinned ? "Unpin note" : "Pin note"}>
               <IconButton
                 onClick={async () => {
@@ -1325,10 +1400,17 @@ export function Editor({ onToggleSidebar, sidebarVisible }: EditorProps) {
               </IconButton>
             </Tooltip>
           )}
-          {currentNote && (
+          {(currentNote || externalFile) && (
             <Tooltip content={`Find in note (${mod}${isMac ? "" : "+"}F)`}>
               <IconButton onClick={() => setSearchOpen(true)}>
                 <SearchIcon className="w-4.25 h-4.25 stroke-[1.6]" />
+              </IconButton>
+            </Tooltip>
+          )}
+          {externalFile && (
+            <Tooltip content="Close external file">
+              <IconButton onClick={closeExternalFile}>
+                <XIcon className="w-4.5 h-4.5 stroke-[1.5]" />
               </IconButton>
             </Tooltip>
           )}

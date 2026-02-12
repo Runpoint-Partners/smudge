@@ -1,12 +1,12 @@
 [package]
-name = "Scratch"
+name = "Smudge"
 version = "0.4.0"
 description = "An offline markdown-based notes app"
 authors = ["erictli"]
 edition = "2021"
 
 [lib]
-name = "scratch_lib"
+name = "smudge_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -29,3 +29,6 @@ base64 = "0.22"
 url = "2"
 open = "5"
 regex = "1"
+
+[patch.crates-io]
+tao = { path = "vendor/tao" }

@@ -3,7 +3,9 @@ use base64::Engine;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::hash::{Hash, Hasher};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tantivy::collector::TopDocs;
@@ -23,6 +25,82 @@ pub struct OpenedFiles(Mutex<Vec<PathBuf>>);
 // Flag indicating the frontend is ready to receive events
 #[derive(Default)]
 pub struct FrontendReady(Mutex<bool>);
+
+fn debug_open_log(message: &str) {
+    let mut log_path = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+        .join("Library")
+        .join("Application Support")
+        .join("com.smudge")
+        .join("open-debug.log");
+
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    } else {
+        log_path = PathBuf::from("/tmp/smudge-open-debug.log");
+    }
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        Ok(file) => file,
+        Err(_) => return,
+    };
+    let _ = writeln!(file, "{}", message);
+}
+
+fn is_markdown_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn collect_startup_opened_files_from_args() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let args: Vec<String> = std::env::args().collect();
+    debug_open_log(&format!("[startup] args={:?}", args));
+    for arg in std::env::args_os().skip(1) {
+        let parsed_path = if let Some(s) = arg.to_str() {
+            // Finder often adds this process serial number arg.
+            if s.starts_with("-psn_") {
+                continue;
+            }
+
+            // Finder/LaunchServices may provide a file URL at startup.
+            if s.starts_with("file://") {
+                tauri::Url::parse(s)
+                    .ok()
+                    .and_then(|u| u.to_file_path().ok())
+            } else {
+                Some(PathBuf::from(s))
+            }
+        } else {
+            Some(PathBuf::from(&arg))
+        };
+
+        let Some(path) = parsed_path else {
+            continue;
+        };
+
+        if !path.is_file() || !is_markdown_file(&path) {
+            continue;
+        }
+
+        #[cfg(target_os = "macos")]
+        if let Some(p) = path.to_str() {
+            remove_quarantine(p);
+        }
+
+        paths.push(path);
+    }
+    debug_open_log(&format!("[startup] collected_paths={:?}", paths));
+    paths
+}
 
 // Note metadata for list display
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1787,6 +1865,86 @@ async fn write_external_file(path: String, content: String) -> Result<(), String
         .map_err(|e| format!("Failed to write file: {}", e))
 }
 
+#[tauri::command]
+async fn import_external_file_to_notes(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    let folder = {
+        let app_config = state.app_config.read().expect("app_config read lock");
+        app_config
+            .notes_folder
+            .clone()
+            .ok_or("Notes folder not set")?
+    };
+
+    let source_path = PathBuf::from(&path);
+    if !source_path.exists() || !source_path.is_file() {
+        return Err("External file not found".to_string());
+    }
+    if !is_markdown_file(&source_path) {
+        return Err("External file is not markdown".to_string());
+    }
+
+    let folder_path = PathBuf::from(&folder);
+    if source_path.starts_with(&folder_path) {
+        if let Some(stem) = source_path.file_stem().and_then(|s| s.to_str()) {
+            return Ok(stem.to_string());
+        }
+    }
+
+    let content = fs::read_to_string(&source_path)
+        .await
+        .map_err(|e| format!("Failed to read external file for import: {}", e))?;
+
+    let base_name = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("imported");
+    let base_id = sanitize_filename(base_name);
+
+    // Stable ID per source path so reopening the same file updates one imported note.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source_path.to_string_lossy().hash(&mut hasher);
+    let path_hash = hasher.finish() as u32;
+    let final_id = format!("{}-{:08x}", base_id, path_hash);
+    let target_path = folder_path.join(format!("{}.md", final_id));
+
+    fs::write(&target_path, &content)
+        .await
+        .map_err(|e| format!("Failed to import external file: {}", e))?;
+
+    let metadata = fs::metadata(&target_path)
+        .await
+        .map_err(|e| format!("Failed to read imported file metadata: {}", e))?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let title = extract_title(&content);
+
+    {
+        let index = state.search_index.lock().expect("search index mutex");
+        if let Some(ref search_index) = *index {
+            let _ = search_index.index_note(&final_id, &title, &content, modified);
+        }
+    }
+
+    {
+        let mut cache = state.notes_cache.write().expect("cache write lock");
+        cache.insert(
+            final_id.clone(),
+            NoteMetadata {
+                id: final_id.clone(),
+                title,
+                preview: generate_preview(&content),
+                modified,
+            },
+        );
+    }
+
+    Ok(final_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1832,6 +1990,24 @@ pub fn run() {
             app.manage(state);
             app.manage(OpenedFiles::default());
             app.manage(FrontendReady::default());
+
+            // Cold-start fallback for macOS file association:
+            // Finder can pass opened documents as launch arguments.
+            #[cfg(target_os = "macos")]
+            {
+                let startup_paths = collect_startup_opened_files_from_args();
+                debug_open_log(&format!("[setup] startup_paths={:?}", startup_paths));
+                if !startup_paths.is_empty() {
+                    if let Some(opened) = app.try_state::<OpenedFiles>() {
+                        let mut files = opened.0.lock().expect("opened files mutex");
+                        files.extend(startup_paths);
+                        debug_open_log(&format!(
+                            "[setup] buffered_startup_files={:?}",
+                            *files
+                        ));
+                    }
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1866,16 +2042,21 @@ pub fn run() {
             mark_frontend_ready,
             read_external_file,
             write_external_file,
+            import_external_file_to_notes,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let RunEvent::Opened { urls } = event {
+                debug_open_log(&format!("[run_event] opened_urls={:?}", urls));
                 let mut file_paths: Vec<PathBuf> = Vec::new();
 
                 for url in urls {
                     if let Ok(path) = url.to_file_path() {
+                        if !is_markdown_file(&path) {
+                            continue;
+                        }
                         // Strip quarantine so Gatekeeper won't block the file
                         #[cfg(target_os = "macos")]
                         if let Some(p) = path.to_str() {
@@ -1889,21 +2070,22 @@ pub fn run() {
                     return;
                 }
 
-                // Check if frontend is ready
+                // Always buffer paths — frontend retrieves via get_opened_files command
+                if let Some(state) = app.try_state::<OpenedFiles>() {
+                    let mut files = state.0.lock().expect("opened files mutex");
+                    files.extend(file_paths);
+                    debug_open_log(&format!("[run_event] buffered_files={:?}", *files));
+                }
+
+                // Notify frontend to check for new files
                 let frontend_ready = app.try_state::<FrontendReady>()
                     .map(|s| *s.0.lock().expect("frontend ready mutex"))
                     .unwrap_or(false);
 
                 if frontend_ready {
-                    // Warm start: emit event to frontend
-                    for path in file_paths {
-                        let _ = app.emit("file-opened", path.to_string_lossy().into_owned());
-                    }
-                } else {
-                    // Cold start: buffer paths for frontend to pick up
-                    if let Some(state) = app.try_state::<OpenedFiles>() {
-                        let mut files = state.0.lock().expect("opened files mutex");
-                        files.extend(file_paths);
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("file-opened", "check");
+                        debug_open_log("[run_event] emitted file-opened signal");
                     }
                 }
             }

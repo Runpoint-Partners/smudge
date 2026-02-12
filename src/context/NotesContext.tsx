@@ -8,10 +8,19 @@ import {
   useRef,
   type ReactNode,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Note, NoteMetadata } from "../types/note";
 import * as notesService from "../services/notes";
 import type { SearchResult } from "../services/notes";
+
+// External file opened via OS file association
+export interface ExternalFile {
+  path: string;
+  content: string;
+  originalContent: string;
+  name: string;
+}
 
 // Separate contexts to prevent unnecessary re-renders
 // Data context: changes frequently, only subscribed by components that need the data
@@ -27,6 +36,7 @@ interface NotesDataContextValue {
   isSearching: boolean;
   hasExternalChanges: boolean;
   reloadVersion: number;
+  externalFile: ExternalFile | null;
 }
 
 // Actions context: stable references, rarely causes re-renders
@@ -43,6 +53,9 @@ interface NotesActionsContextValue {
   clearSearch: () => void;
   pinNote: (id: string) => Promise<void>;
   unpinNote: (id: string) => Promise<void>;
+  openExternalFile: (filePath: string) => Promise<void>;
+  saveExternalFile: (content: string) => Promise<void>;
+  closeExternalFile: () => void;
 }
 
 const NotesDataContext = createContext<NotesDataContextValue | null>(null);
@@ -61,6 +74,8 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   const [hasExternalChanges, setHasExternalChanges] = useState(false);
   // Increments when user manually refreshes, so Editor knows to reload content
   const [reloadVersion, setReloadVersion] = useState(0);
+  // External file state (opened via OS file association)
+  const [externalFile, setExternalFile] = useState<ExternalFile | null>(null);
 
   // Track recently saved note IDs to ignore file-change events from our own saves
   const recentlySavedRef = useRef<Set<string>>(new Set());
@@ -96,6 +111,8 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       // Set selected ID immediately for responsive UI
       setSelectedNoteId(id);
       setHasExternalChanges(false);
+      // Clear external file when selecting a note
+      setExternalFile(null);
       const note = await notesService.readNote(id);
       setCurrentNote(note);
     } catch (err) {
@@ -121,6 +138,8 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       await refreshNotes();
       setCurrentNote(note);
       setSelectedNoteId(note.id);
+      // Clear external file when creating a new note
+      setExternalFile(null);
       // Clear search when creating a new note
       setSearchQuery("");
       setSearchResults([]);
@@ -317,6 +336,53 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     setSearchResults([]);
   }, []);
 
+  // External file operations
+  const openExternalFile = useCallback(async (filePath: string) => {
+    try {
+      const content = await invoke<string>("read_external_file", { path: filePath });
+      const name = filePath.split("/").pop()?.replace(/\.md$/, "") || "Untitled";
+      setExternalFile({
+        path: filePath,
+        content,
+        originalContent: content,
+        name,
+      });
+      // Deselect any current note
+      setSelectedNoteId(null);
+      setCurrentNote(null);
+      setReloadVersion((v) => v + 1);
+
+      // Keep a copy of opened external markdown files in the notes folder.
+      // This makes externally opened files discoverable later in Smudge.
+      if (notesFolder) {
+        try {
+          await invoke<string>("import_external_file_to_notes", { path: filePath });
+          await refreshNotes();
+        } catch (importErr) {
+          console.error("Failed to import external file into notes folder:", importErr);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to open external file");
+    }
+  }, [notesFolder, refreshNotes]);
+
+  const saveExternalFile = useCallback(async (content: string) => {
+    if (!externalFile) return;
+    try {
+      await invoke("write_external_file", { path: externalFile.path, content });
+      setExternalFile((prev) =>
+        prev ? { ...prev, content, originalContent: content } : null
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save external file");
+    }
+  }, [externalFile]);
+
+  const closeExternalFile = useCallback(() => {
+    setExternalFile(null);
+  }, []);
+
   // Load initial state
   useEffect(() => {
     async function init() {
@@ -402,6 +468,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       isSearching,
       hasExternalChanges,
       reloadVersion,
+      externalFile,
     }),
     [
       notes,
@@ -415,6 +482,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       isSearching,
       hasExternalChanges,
       reloadVersion,
+      externalFile,
     ]
   );
 
@@ -433,6 +501,9 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       clearSearch,
       pinNote,
       unpinNote,
+      openExternalFile,
+      saveExternalFile,
+      closeExternalFile,
     }),
     [
       selectNote,
@@ -447,6 +518,9 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       clearSearch,
       pinNote,
       unpinNote,
+      openExternalFile,
+      saveExternalFile,
+      closeExternalFile,
     ]
   );
 
