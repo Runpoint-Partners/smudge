@@ -1,4 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { toast } from "sonner";
 import { NotesProvider, useNotes } from "./context/NotesContext";
 import { ThemeProvider } from "./context/ThemeContext";
@@ -32,12 +35,70 @@ function AppContent() {
     searchResults,
     reloadCurrentNote,
     currentNote,
+    externalFile,
+    openExternalFile,
   } = useNotes();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [view, setView] = useState<ViewState>("notes");
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiEditing, setAiEditing] = useState(false);
+
+  // Cold start: check for files opened via OS file association
+  useEffect(() => {
+    async function checkOpenedFiles() {
+      try {
+        const files = await invoke<string[]>("get_opened_files");
+        if (files.length > 0) {
+          await openExternalFile(files[0]);
+        }
+        // Mark frontend as ready for warm-start events
+        await invoke("mark_frontend_ready");
+      } catch (err) {
+        console.error("Failed to check opened files:", err);
+      }
+    }
+    checkOpenedFiles();
+  }, [openExternalFile]);
+
+  // Warm start: listen for file-opened events from the Rust backend
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    listen<string>("file-opened", (event) => {
+      openExternalFile(event.payload);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [openExternalFile]);
+
+  // Drag-and-drop: open .md files dropped onto the app window
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    getCurrentWindow()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "drop") {
+          const mdFile = event.payload.paths.find((p) =>
+            /\.(md|markdown|mdown|mkd)$/i.test(p),
+          );
+          if (mdFile) {
+            openExternalFile(mdFile);
+          }
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [openExternalFile]);
 
   const toggleSidebar = useCallback(() => {
     setSidebarVisible((prev) => !prev);
@@ -250,13 +311,13 @@ function AppContent() {
       <div className="h-screen flex items-center justify-center bg-bg-secondary">
         <div className="text-text-muted/70 text-sm flex items-center gap-1.5 font-medium">
           <SpinnerIcon className="w-4.5 h-4.5 stroke-[1.5] animate-spin" />
-          Initializing Scratch...
+          Initializing Smudge...
         </div>
       </div>
     );
   }
 
-  if (!notesFolder) {
+  if (!notesFolder && !externalFile) {
     return <FolderPicker />;
   }
 
@@ -265,6 +326,16 @@ function AppContent() {
       <div className="h-screen flex bg-bg overflow-hidden">
         {view === "settings" ? (
           <SettingsPage onBack={closeSettings} />
+        ) : externalFile ? (
+          <>
+            {notesFolder && sidebarVisible && (
+              <Sidebar onOpenSettings={toggleSettings} />
+            )}
+            <Editor
+              onToggleSidebar={notesFolder ? toggleSidebar : undefined}
+              sidebarVisible={notesFolder ? sidebarVisible : false}
+            />
+          </>
         ) : (
           <>
             {sidebarVisible && <Sidebar onOpenSettings={toggleSettings} />}
@@ -359,7 +430,7 @@ function UpdateToast({
     try {
       await update.downloadAndInstall();
       toast.dismiss(toastId);
-      toast.success("Update installed! Restart Scratch to apply.", {
+      toast.success("Update installed! Restart Smudge to apply.", {
         duration: Infinity,
         closeButton: true,
       });
