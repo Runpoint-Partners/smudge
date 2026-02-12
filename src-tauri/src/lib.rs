@@ -10,11 +10,19 @@ use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tokio::fs;
 
 mod git;
+
+// State for tracking files opened via OS file association (double-click .md)
+#[derive(Default)]
+pub struct OpenedFiles(Mutex<Vec<PathBuf>>);
+
+// Flag indicating the frontend is ready to receive events
+#[derive(Default)]
+pub struct FrontendReady(Mutex<bool>);
 
 // Note metadata for list display
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,7 +93,7 @@ pub struct AppConfig {
     pub notes_folder: Option<String>,
 }
 
-// Per-folder settings (stored in .scratch/settings.json within notes folder)
+// Per-folder settings (stored in .smudge/settings.json within notes folder)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub theme: ThemeSettings,
@@ -291,7 +299,7 @@ impl SearchIndex {
 // App state with improved structure
 pub struct AppState {
     pub app_config: RwLock<AppConfig>,  // notes_folder path (stored in app data)
-    pub settings: RwLock<Settings>,      // per-folder settings (stored in .scratch/)
+    pub settings: RwLock<Settings>,      // per-folder settings (stored in .smudge/)
     pub notes_cache: RwLock<HashMap<String, NoteMetadata>>,
     pub file_watcher: Mutex<Option<FileWatcherState>>,
     pub search_index: Mutex<Option<SearchIndex>>,
@@ -472,11 +480,11 @@ fn get_app_config_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(app_data.join("config.json"))
 }
 
-// Get per-folder settings file path (in .scratch/ within notes folder)
+// Get per-folder settings file path (in .smudge/ within notes folder)
 fn get_settings_path(notes_folder: &str) -> PathBuf {
-    let scratch_dir = PathBuf::from(notes_folder).join(".scratch");
-    std::fs::create_dir_all(&scratch_dir).ok();
-    scratch_dir.join("settings.json")
+    let smudge_dir = PathBuf::from(notes_folder).join(".smudge");
+    std::fs::create_dir_all(&smudge_dir).ok();
+    smudge_dir.join("settings.json")
 }
 
 // Get search index path
@@ -565,9 +573,9 @@ fn set_notes_folder(app: AppHandle, path: String, state: State<AppState>) -> Res
     let assets = path_buf.join("assets");
     std::fs::create_dir_all(&assets).map_err(|e| e.to_string())?;
 
-    // Create .scratch config folder
-    let scratch_dir = path_buf.join(".scratch");
-    std::fs::create_dir_all(&scratch_dir).map_err(|e| e.to_string())?;
+    // Create .smudge config folder
+    let smudge_dir = path_buf.join(".smudge");
+    std::fs::create_dir_all(&smudge_dir).map_err(|e| e.to_string())?;
 
     // Load per-folder settings (starts fresh with defaults if none exist)
     let settings = load_settings(&path);
@@ -1737,6 +1745,48 @@ async fn ai_execute_claude(
 
     Ok(result)
 }
+// External file commands for file association support
+
+#[tauri::command]
+fn get_opened_files(state: State<OpenedFiles>) -> Vec<String> {
+    let mut files = state.0.lock().expect("opened files mutex");
+    let paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    files.clear();
+    paths
+}
+
+#[tauri::command]
+fn mark_frontend_ready(state: State<FrontendReady>) {
+    let mut ready = state.0.lock().expect("frontend ready mutex");
+    *ready = true;
+}
+
+/// Remove macOS quarantine extended attribute so Gatekeeper doesn't block
+/// files the user explicitly chose to open.
+#[cfg(target_os = "macos")]
+fn remove_quarantine(path: &str) {
+    let _ = std::process::Command::new("xattr")
+        .args(["-d", "com.apple.quarantine", path])
+        .output();
+}
+
+#[tauri::command]
+async fn read_external_file(path: String) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    remove_quarantine(&path);
+
+    fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read file: {}", e))
+}
+
+#[tauri::command]
+async fn write_external_file(path: String, content: String) -> Result<(), String> {
+    fs::write(&path, &content)
+        .await
+        .map_err(|e| format!("Failed to write file: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1780,6 +1830,8 @@ pub fn run() {
                 debounce_map: Arc::new(Mutex::new(HashMap::new())),
             };
             app.manage(state);
+            app.manage(OpenedFiles::default());
+            app.manage(FrontendReady::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1810,7 +1862,50 @@ pub fn run() {
             git_push_with_upstream,
             ai_check_claude_cli,
             ai_execute_claude,
+            get_opened_files,
+            mark_frontend_ready,
+            read_external_file,
+            write_external_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            if let RunEvent::Opened { urls } = event {
+                let mut file_paths: Vec<PathBuf> = Vec::new();
+
+                for url in urls {
+                    if let Ok(path) = url.to_file_path() {
+                        // Strip quarantine so Gatekeeper won't block the file
+                        #[cfg(target_os = "macos")]
+                        if let Some(p) = path.to_str() {
+                            remove_quarantine(p);
+                        }
+                        file_paths.push(path);
+                    }
+                }
+
+                if file_paths.is_empty() {
+                    return;
+                }
+
+                // Check if frontend is ready
+                let frontend_ready = app.try_state::<FrontendReady>()
+                    .map(|s| *s.0.lock().expect("frontend ready mutex"))
+                    .unwrap_or(false);
+
+                if frontend_ready {
+                    // Warm start: emit event to frontend
+                    for path in file_paths {
+                        let _ = app.emit("file-opened", path.to_string_lossy().into_owned());
+                    }
+                } else {
+                    // Cold start: buffer paths for frontend to pick up
+                    if let Some(state) = app.try_state::<OpenedFiles>() {
+                        let mut files = state.0.lock().expect("opened files mutex");
+                        files.extend(file_paths);
+                    }
+                }
+            }
+        });
 }
