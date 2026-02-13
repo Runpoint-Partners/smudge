@@ -339,6 +339,26 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   // External file operations
   const openExternalFile = useCallback(async (filePath: string) => {
     try {
+      // If we have a notes folder, import the file there and open as a regular note.
+      // This ensures all edits are saved to the notes folder, not the original location.
+      if (notesFolder) {
+        try {
+          const noteId = await invoke<string>("import_external_file_to_notes", { path: filePath });
+          await refreshNotes();
+          // Open the imported note as a regular note
+          setExternalFile(null);
+          const note = await notesService.readNote(noteId);
+          setCurrentNote(note);
+          setSelectedNoteId(noteId);
+          setReloadVersion((v) => v + 1);
+          return;
+        } catch (importErr) {
+          console.error("Failed to import external file into notes folder:", importErr);
+          // Fall through to open as external file
+        }
+      }
+
+      // Fallback: no notes folder configured or import failed — open in place
       const content = await invoke<string>("read_external_file", { path: filePath });
       const name = filePath.split("/").pop()?.replace(/\.md$/, "") || "Untitled";
       setExternalFile({
@@ -347,21 +367,9 @@ export function NotesProvider({ children }: { children: ReactNode }) {
         originalContent: content,
         name,
       });
-      // Deselect any current note
       setSelectedNoteId(null);
       setCurrentNote(null);
       setReloadVersion((v) => v + 1);
-
-      // Keep a copy of opened external markdown files in the notes folder.
-      // This makes externally opened files discoverable later in Smudge.
-      if (notesFolder) {
-        try {
-          await invoke<string>("import_external_file_to_notes", { path: filePath });
-          await refreshNotes();
-        } catch (importErr) {
-          console.error("Failed to import external file into notes folder:", importErr);
-        }
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to open external file");
     }
