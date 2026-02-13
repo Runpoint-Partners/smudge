@@ -275,8 +275,6 @@ function AppContent() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const isInEditor = target.closest(".ProseMirror");
-      const isInInput =
-        target.tagName === "INPUT" || target.tagName === "TEXTAREA";
 
       // Cmd+, - Toggle settings (always works, even in settings)
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
@@ -325,8 +323,10 @@ function AppContent() {
         return;
       }
 
-      // Arrow keys for note navigation (when not in editor or input)
-      if (!isInEditor && !isInInput && displayItems.length > 0) {
+      // Arrow keys for note navigation (only when note list has focus)
+      const isInNoteList = target.closest("[data-note-list]") !== null;
+
+      if (isInNoteList && displayItems.length > 0) {
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
           e.preventDefault();
           const currentIndex = displayItems.findIndex(
@@ -347,7 +347,7 @@ function AppContent() {
         }
 
         // Enter to focus editor
-        if (e.key === "Enter" && selectedNoteId) {
+        if (e.key === "Enter" && isInNoteList && selectedNoteId) {
           e.preventDefault();
           const editor = document.querySelector(".ProseMirror") as HTMLElement;
           if (editor) {

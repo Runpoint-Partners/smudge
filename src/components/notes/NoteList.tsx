@@ -333,6 +333,7 @@ export function NoteList() {
       <div
         ref={containerRef}
         tabIndex={0}
+        data-note-list
         onKeyDown={handleListKeyDown}
         className="flex flex-col gap-1 p-1.5 outline-none"
       >
