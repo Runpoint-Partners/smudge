@@ -1,8 +1,8 @@
-# Scratch - Development Guide
+# Smudge - Development Guide
 
 ## Project Overview
 
-Scratch is a cross-platform markdown note-taking app for macOS and Windows, built with Tauri v2 (Rust backend) + React/TypeScript/Tailwind (frontend) + TipTap (WYSIWYG editor) + Tantivy (full-text search).
+Smudge is a cross-platform markdown note-taking app for macOS and Windows, built with Tauri v2 (Rust backend) + React/TypeScript/Tailwind (frontend) + TipTap (WYSIWYG editor) + Tantivy (full-text search).
 
 ## Tech Stack
 
@@ -25,93 +25,48 @@ npm run tauri build  # Build production app
 
 **Before building:** Bump version in `package.json` and `src-tauri/tauri.conf.json`
 
-### macOS Build (Universal Binary)
+### Updater Signing Key
 
-Builds a universal binary supporting both Intel and Apple Silicon Macs.
+The auto-updater requires signed artifacts. The signing key pair lives at:
+- **Private key:** `.tauri-signing-key` (gitignored — DO NOT commit)
+- **Public key:** Embedded in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`
+- **Password:** `smudge`
 
-**Prerequisites:**
+**Before every release build**, set these environment variables:
 ```bash
-rustup target add x86_64-apple-darwin
-rustup target add aarch64-apple-darwin
+export TAURI_SIGNING_PRIVATE_KEY="$(cat .tauri-signing-key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="smudge"
 ```
 
+If the private key is ever lost, generate a new pair and update the pubkey in `tauri.conf.json`:
+```bash
+npx tauri signer generate -p "smudge" -w .tauri-signing-key --ci
+# Then copy the contents of .tauri-signing-key.pub into tauri.conf.json plugins.updater.pubkey
+```
+
+### macOS Build (Apple Silicon)
+
 **Build Steps:**
 
-1. Set up environment (credentials in `.env.build`):
+1. Set up signing environment:
    ```bash
-   source .env.build
-   PATH="/usr/bin:$PATH"  # Ensure system xattr is used, not Python's
+   export TAURI_SIGNING_PRIVATE_KEY="$(cat .tauri-signing-key)"
+   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="smudge"
    ```
 
-2. Clean previous build and build universal binary:
+2. Clean previous build and build:
    ```bash
    rm -rf src-tauri/target/release/bundle
-   npm run tauri build -- --target universal-apple-darwin
-   ```
-
-3. Submit for notarization:
-   ```bash
-   xcrun notarytool submit src-tauri/target/release/bundle/macos/Scratch.zip \
-     --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-   ```
-
-4. Staple the notarization ticket:
-   ```bash
-   xcrun stapler staple src-tauri/target/release/bundle/macos/Scratch.app
-   ```
-
-5. Create DMG with Applications symlink:
-   ```bash
-   mkdir -p /tmp/scratch-dmg
-   cp -R src-tauri/target/release/bundle/macos/Scratch.app /tmp/scratch-dmg/
-   ln -sf /Applications /tmp/scratch-dmg/Applications
-   hdiutil create -volname "Scratch" -srcfolder /tmp/scratch-dmg -ov -format UDZO \
-     src-tauri/target/release/bundle/dmg/Scratch_VERSION_universal.dmg
-   rm -rf /tmp/scratch-dmg
-   ```
-
-6. Get checksum and upload: `shasum -a 256 <dmg_path>`
-
-7. The build also generates an updater manifest at:
-   ```
-   src-tauri/target/release/bundle/macos/Scratch.app.tar.gz.sig
-   src-tauri/target/release/bundle/macos/Scratch.app.tar.gz
-   ```
-   These are used by the auto-updater (see [Publishing a Release](#publishing-a-release) below).
-
-### Windows Build
-
-Builds `.msi` installer and `.exe` setup for Windows.
-
-**Prerequisites:**
-- Windows machine or VM
-- Rust toolchain installed (`rustup`)
-- WebView2 Runtime (usually pre-installed on Windows 11)
-
-**Build Steps:**
-
-1. Clean previous build:
-   ```powershell
-   Remove-Item -Recurse -Force src-tauri\target\release\bundle
-   ```
-
-2. Build installers:
-   ```powershell
    npm run tauri build
    ```
 
-3. Outputs will be in `src-tauri/target/release/bundle/`:
-   - `msi/Scratch_VERSION_x64_en-US.msi` - MSI installer
-   - `nsis/Scratch_VERSION_x64-setup.exe` - NSIS setup (recommended for distribution)
-
-4. Get checksum and upload:
-   ```powershell
-   Get-FileHash .\src-tauri\target\release\bundle\nsis\Scratch_VERSION_x64-setup.exe -Algorithm SHA256
+3. Outputs:
    ```
-
-**Notes:**
-- The NSIS setup (`.exe`) automatically downloads WebView2 if needed
-- For x86 support, add `--target i686-pc-windows-msvc` (requires `rustup target add i686-pc-windows-msvc`)
+   src-tauri/target/release/bundle/macos/Smudge.app           # App bundle
+   src-tauri/target/release/bundle/dmg/Smudge_VERSION_aarch64.dmg  # DMG for manual download
+   src-tauri/target/release/bundle/macos/Smudge.app.tar.gz    # Auto-update payload
+   src-tauri/target/release/bundle/macos/Smudge.app.tar.gz.sig  # Update signature
+   ```
 
 ### Publishing a Release
 
@@ -119,50 +74,50 @@ The app checks for updates via the Tauri updater plugin, which fetches `latest.j
 
 **How it works:**
 - On startup (after 3s delay) and manually via Settings → General → "Check for Updates", the app fetches:
-  `https://github.com/erictli/scratch/releases/latest/download/latest.json`
+  `https://github.com/Runpoint-Partners/smudge/releases/latest/download/latest.json`
 - The updater compares the version in `latest.json` to the running app version
 - If newer, a toast appears with an "Update Now" button that downloads and installs the update
 
 **Creating `latest.json`:**
 
-After building for each platform, create a `latest.json` file with this structure:
+After building, create a `latest.json` file:
 
 ```json
 {
   "version": "VERSION",
   "notes": "Release notes here",
-  "pub_date": "2025-01-01T00:00:00Z",
+  "pub_date": "2026-01-01T00:00:00Z",
   "platforms": {
-    "darwin-universal": {
-      "signature": "CONTENTS_OF .app.tar.gz.sig FILE",
-      "url": "https://github.com/erictli/scratch/releases/download/vVERSION/Scratch.app.tar.gz"
-    },
-    "windows-x86_64": {
-      "signature": "CONTENTS_OF .nsis.zip.sig FILE",
-      "url": "https://github.com/erictli/scratch/releases/download/vVERSION/Scratch_VERSION_x64-setup.nsis.zip"
+    "darwin-aarch64": {
+      "signature": "CONTENTS_OF Smudge.app.tar.gz.sig FILE",
+      "url": "https://github.com/Runpoint-Partners/smudge/releases/download/vVERSION/Smudge.app.tar.gz"
     }
   }
 }
 ```
 
-- The `signature` values come from the `.sig` files generated alongside the build artifacts
-- The `url` values should point to the release assets on GitHub
+- The `signature` value is the full content of the `.sig` file
+- The `url` points to the release asset on GitHub
 
-**Upload to GitHub release:**
+**Publish with `gh` CLI:**
 
-1. Create a GitHub release tagged `vVERSION` (e.g., `v0.4.0`)
-2. Upload these assets:
-   - `latest.json` (the updater manifest)
-   - macOS: `Scratch_VERSION_universal.dmg` (for manual download) and `Scratch.app.tar.gz` (for auto-update)
-   - Windows: `Scratch_VERSION_x64-setup.exe` (for manual download) and the NSIS `.zip` (for auto-update)
-3. The updater endpoint resolves to the **latest** release's `latest.json` automatically via GitHub's `/releases/latest/download/` URL pattern
+```bash
+gh release create vVERSION \
+  --title "vVERSION" \
+  --notes "Release notes here" \
+  src-tauri/target/release/bundle/dmg/Smudge_VERSION_aarch64.dmg \
+  src-tauri/target/release/bundle/macos/Smudge.app.tar.gz \
+  path/to/latest.json
+```
+
+The updater endpoint resolves to the **latest** release's `latest.json` automatically via GitHub's `/releases/latest/download/` URL pattern.
 
 **Updater config** is in `src-tauri/tauri.conf.json` under `plugins.updater`, including the public key and endpoint URL.
 
 ## Project Structure
 
 ```
-scratch/
+smudge/
 ├── src/                            # React frontend
 │   ├── components/
 │   │   ├── editor/                 # TipTap editor + extensions
@@ -230,7 +185,7 @@ All backend operations go through Tauri commands defined in `src-tauri/src/lib.r
 ### Settings
 
 - **App config** (notes folder path): `{APP_DATA}/config.json`
-- **Per-folder settings**: `{NOTES_FOLDER}/.scratch/settings.json`
+- **Per-folder settings**: `{NOTES_FOLDER}/.smudge/settings.json`
 
 The settings page provides UI for:
 
