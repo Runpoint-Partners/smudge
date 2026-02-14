@@ -29,3 +29,4 @@ src-tauri/gen/
 
 # Build secrets
 .env.build
+.tauri-signing-key
